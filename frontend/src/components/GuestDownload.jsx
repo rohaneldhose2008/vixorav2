@@ -16,8 +16,7 @@ function GuestDownload({ photoId }) {
       const extIndex = filename.lastIndexOf('.');
       if (extIndex !== -1) {
         const stem = filename.substring(0, extIndex);
-        const ext = filename.substring(extIndex);
-        return `${supabaseUrl}/storage/v1/object/public/photos/${stem}_thumb${ext}`;
+        return `${supabaseUrl}/storage/v1/object/public/photos/${stem}_thumb.jpg`;
       }
     }
     return `${supabaseUrl}/storage/v1/object/public/photos/${filename}`;
