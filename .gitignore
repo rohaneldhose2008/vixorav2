@@ -1,0 +1,24 @@
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+backend/vixora2.db
+backend/watch_folder/*.jpg
+backend/watch_folder/*.jpeg
+backend/watch_folder/*.png
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env*
+!frontend/.env.example
+
+# Executables & Binaries
+*.exe
+*.old
+
+# OS / Editors
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
