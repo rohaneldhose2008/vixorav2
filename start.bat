@@ -11,7 +11,7 @@ set PORT=8001
 start "Vixora Backend" /D "d:\vixora version 2\backend" .\venv\Scripts\python.exe run.py
 
 echo [*] Starting Ngrok Secure Tunnel on port 8001...
-start "Vixora Ngrok Tunnel" /D "d:\vixora version 2" .\ngrok.exe http 8001
+start "Vixora Ngrok Tunnel" /D "d:\vixora version 2" .\ngrok.exe http 8001 --authtoken 3FfCYx0cdfvdv8Ss2O1oqUFUZKh_3ZrhZme5gTBzRoUU7NEZF
 
 echo.
 echo ====================================================================
