@@ -135,15 +135,16 @@ def get_event_photos() -> list:
 def wipe_all_data() -> bool:
     # 1. Delete all events (which cascades to photos database rows)
     try:
-        _request("/rest/v1/events", method="DELETE")
+        # Use a filter like id=gt.0 to bypass PostgREST's protection against bulk deletes without filters
+        _request("/rest/v1/events?id=gt.0", method="DELETE")
     except Exception as e:
         logger.error(f"Failed to delete events: {e}")
         
     # 2. Delete all files in storage bucket
     try:
-        files = _request("/storage/v1/bucket/photos/list", method="POST",
+        files = _request("/storage/v1/object/list/photos", method="POST",
                          headers={"Content-Type": "application/json"},
-                         data=json.dumps({"sortBy": {"column": "name", "order": "asc"}}).encode("utf-8"))
+                         data=json.dumps({"prefix": "", "sortBy": {"column": "name", "order": "asc"}}).encode("utf-8"))
         if files and isinstance(files, list):
             file_names = [f["name"] for f in files if "name" in f]
             if file_names:
