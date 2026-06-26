@@ -734,6 +734,7 @@ h1, h2, h3, h4 {
   padding: 25px;
   width: 100%;
   flex: 1;
+  min-height: 0; /* Prevent vertical overflow of the grid container */
   box-sizing: border-box;
   align-content: center;
 }
@@ -746,6 +747,7 @@ h1, h2, h3, h4 {
   border-radius: var(--border-radius-md);
   overflow: hidden;
   height: 100%;
+  min-height: 0; /* Allow cards to shrink to fit the grid cell height */
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
   transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
@@ -783,6 +785,7 @@ h1, h2, h3, h4 {
 
 .display-img-wrapper {
   flex: 1;
+  min-height: 0; /* Allow the image wrapper to shrink to make room for QR codes */
   overflow: hidden;
   background: #000;
   display: flex;
