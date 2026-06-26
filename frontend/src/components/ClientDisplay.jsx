@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Camera } from 'lucide-react';
+import { Camera, AlertCircle } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
 function ClientDisplay() {
@@ -142,6 +142,25 @@ function ClientDisplay() {
     gridStyle = { gridTemplateColumns: 'repeat(5, 1fr)', gridTemplateRows: 'repeat(2, 1fr)' };
     qrSize = 75;
     showQrText = count <= 8; // Hide text if 9 or 10 to fit in the grid cell height
+  }
+
+  if (!supabase) {
+    return (
+      <div className="slideshow-fullscreen">
+        <div className="slideshow-standby" style={{ padding: '40px' }}>
+          <AlertCircle size={80} style={{ color: 'var(--accent-red)' }} />
+          <h1 className="gradient-text">Supabase Config Missing</h1>
+          <p style={{ maxWidth: '600px', margin: '0 auto 20px auto', color: 'var(--text-secondary)' }}>
+            The website is running, but the Supabase cloud database credentials are not configured.
+          </p>
+          <div style={{ background: 'rgba(255,255,255,0.05)', padding: '15px', borderRadius: '8px', fontSize: '13px', textAlign: 'left', maxWidth: '600px', margin: '0 auto', fontFamily: 'monospace', lineHeight: '1.6' }}>
+            Please add these variables to your Vercel Environment Variables:<br/>
+            - <b>VITE_SUPABASE_URL</b><br/>
+            - <b>VITE_SUPABASE_ANON_KEY</b>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

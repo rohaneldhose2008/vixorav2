@@ -97,6 +97,24 @@ function GuestDownload({ photoId }) {
     }
   };
 
+  if (!supabase) {
+    return (
+      <div className="guest-viewport">
+        <div className="glass-card guest-card" style={{ padding: '30px', textAlign: 'center' }}>
+          <div className="logo-section" style={{ justifyContent: 'center', marginBottom: '20px' }}>
+            <Camera className="logo-icon" size={28} />
+            <h1 className="gradient-text" style={{ fontSize: '24px' }}>VIXORA SHARE</h1>
+          </div>
+          <AlertCircle size={48} style={{ color: 'var(--accent-red)', margin: '0 auto 15px auto' }} />
+          <h3>Connection Failed</h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', marginTop: '10px' }}>
+            This website is missing its database connection configuration. Please inform the event admin.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="guest-viewport">
       <div className="glass-card guest-card">
