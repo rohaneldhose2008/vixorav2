@@ -72,7 +72,7 @@ def get_photo_urls(photo_id: str, request_url: str) -> tuple[str, str]:
     base = base.rstrip('/')
     return f"{base}/download/{photo_id}", f"{base}/api/photos/{photo_id}/qrcode"
 
-def broadcast_new_photo(photo: Photo):
+def broadcast_new_photo(photo):
     """Callback triggered by FolderWatcher or CameraManager from a background thread.
     Uses asyncio.run_coroutine_threadsafe to push to the main async event loop.
     """
