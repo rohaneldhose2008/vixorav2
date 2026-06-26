@@ -414,14 +414,17 @@ def get_photo_image(photo_id: str, db: Session = Depends(get_db)):
     return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.original_name or photo.filename)
 
 @app.get("/api/photos/{photo_id}/qrcode")
-def get_photo_qrcode(photo_id: str, request: Request, db: Session = Depends(get_db)):
+def get_photo_qrcode(photo_id: str, request: Request, public_url: Optional[str] = None, db: Session = Depends(get_db)):
     """Generates the QR code pointing to the download URL dynamically in-memory."""
     photo = db.query(Photo).filter(Photo.id == photo_id).first()
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
 
     # Generate public link
-    download_url, _ = get_photo_urls(photo.id, str(request.base_url))
+    if public_url:
+        download_url = f"{public_url.rstrip('/')}/download/{photo.id}"
+    else:
+        download_url, _ = get_photo_urls(photo.id, str(request.base_url))
     
     # Generate QR Code
     qr = qrcode.QRCode(

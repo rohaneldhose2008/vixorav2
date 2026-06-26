@@ -637,7 +637,7 @@ function Dashboard({
               
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', padding: '10px' }}>
                 <img 
-                  src={`${BACKEND_URL}/api/photos/${selectedPhoto.id}/qrcode`} 
+                  src={`${BACKEND_URL}/api/photos/${selectedPhoto.id}/qrcode?public_url=${encodeURIComponent(window.location.origin)}`} 
                   alt="QR Code" 
                   style={{ width: '180px', height: '180px', background: '#fff', padding: '10px', borderRadius: '8px' }}
                 />

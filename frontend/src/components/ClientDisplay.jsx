@@ -121,7 +121,7 @@ function ClientDisplay() {
                     borderRadius: count > 8 ? '6px' : '12px' 
                   }}>
                     {/* Render QR code via absolute path pointing to local or Ngrok URL */}
-                    <img src={`${BACKEND_URL}/api/photos/${photo.id}/qrcode`} alt="Scan QR" />
+                    <img src={`${BACKEND_URL}/api/photos/${photo.id}/qrcode?public_url=${encodeURIComponent(window.location.origin)}`} alt="Scan QR" />
                   </div>
                   {showQrText && (
                     <div className="display-qr-text">

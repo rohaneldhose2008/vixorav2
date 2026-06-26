@@ -4,41 +4,60 @@ import { Download, Camera, Loader2, AlertCircle } from 'lucide-react';
 function GuestDownload({ photoId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [imageSrc, setImageSrc] = useState('');
   
   const BACKEND_URL = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/$/, '');
   const imageUrl = `${BACKEND_URL}/api/photos/${photoId}/image`;
 
   useEffect(() => {
-    // Verify if photo exists
-    fetch(imageUrl)
+    let active = true;
+    let localUrl = '';
+
+    setLoading(true);
+    setError(null);
+
+    // Fetch the photo as a blob with the bypass header
+    fetch(imageUrl, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    })
       .then((res) => {
         if (!res.ok) {
           throw new Error("This photo is no longer available or the event has ended.");
         }
-        setLoading(false);
+        return res.blob();
+      })
+      .then((blob) => {
+        if (active) {
+          localUrl = window.URL.createObjectURL(blob);
+          setImageSrc(localUrl);
+          setLoading(false);
+        }
       })
       .catch((err) => {
-        setError(err.message);
-        setLoading(false);
+        if (active) {
+          setError(err.message);
+          setLoading(false);
+        }
       });
+
+    return () => {
+      active = false;
+      if (localUrl) {
+        window.URL.revokeObjectURL(localUrl);
+      }
+    };
   }, [photoId]);
 
-  const handleDownload = async () => {
-    try {
-      const response = await fetch(imageUrl);
-      const blob = await response.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.download = `Vixora_${photoId}.jpg`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(blobUrl);
-    } catch (e) {
-      // Fallback
-      window.open(imageUrl, '_blank');
-    }
+  const handleDownload = () => {
+    if (!imageSrc) return;
+    const link = document.createElement('a');
+    link.href = imageSrc;
+    link.download = `Vixora_${photoId}.jpg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
@@ -70,7 +89,7 @@ function GuestDownload({ photoId }) {
             </p>
 
             <div className="guest-img-wrapper">
-              <img src={imageUrl} alt="Captured Moment" className="guest-img" />
+              <img src={imageSrc} alt="Captured Moment" className="guest-img" />
             </div>
 
             <button className="btn btn-primary" onClick={handleDownload} style={{ width: '100%' }}>
