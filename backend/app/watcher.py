@@ -9,8 +9,6 @@ from watchdog.events import FileSystemEventHandler
 from PIL import Image
 
 from app.config import settings
-from app.database import SessionLocal
-from app.models import Event, Photo
 
 logger = logging.getLogger("watcher")
 
@@ -105,45 +103,47 @@ class FolderWatcher:
         self.is_running = False
 
     def _handle_new_photo(self, src_path: Path):
-        """Copies the photo to Vixora's internal photos folder and creates database entry."""
+        """Copies/compresses the photo and uploads it to Supabase database and storage."""
         import uuid
-        db = SessionLocal()
+        import io
+        import urllib.parse
+        from app import supabase_client
+        
         try:
-            # 1. Get active event
-            active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
+            # 1. Get active event from Supabase
+            active_event = supabase_client.get_active_event()
             if not active_event:
-                # If no active event exists, create a default one
-                active_event = Event(name="Default Event")
-                db.add(active_event)
-                db.commit()
-                db.refresh(active_event)
-                logger.info("No active event found. Created default 'Default Event'.")
+                # If no active event exists, create a default one in Supabase
+                active_event = supabase_client.create_event("My First Vixora Event")
+                logger.info("No active event found. Created default event in Supabase.")
 
             # 2. Check for duplicate to avoid multiple processing of the same filesystem event
-            existing_photo = db.query(Photo).filter(
-                Photo.original_name == src_path.name,
-                Photo.event_id == active_event.id
-            ).first()
-            
-            if existing_photo:
-                logger.info(f"Photo {src_path.name} already processed. Skipping duplicate event.")
+            from app.supabase_client import _request
+            existing = _request(f"/rest/v1/photos?original_name=eq.{urllib.parse.quote(src_path.name)}&event_id=eq.{active_event['id']}&select=id")
+            if existing and len(existing) > 0:
+                logger.info(f"Photo {src_path.name} already processed in Supabase. Skipping duplicate.")
                 return
 
             # 3. Generate a secure, unique UUID photo_id
             photo_uuid = str(uuid.uuid4())
-            # Maintain the original stem in the filename for readability on disk
             clean_stem = "".join([c if c.isalnum() or c in ('-', '_') else '_' for c in src_path.stem])
             dest_filename = f"{clean_stem}_{photo_uuid[:8]}{src_path.suffix}"
-            dest_path = settings.PHOTOS_DIR / dest_filename
             
-            # 4. Copy and compress file to local photos folder
+            # Temporary local path in photos directory
+            dest_path = settings.PHOTOS_DIR / dest_filename
+            thumb_filename = f"{Path(dest_filename).stem}_thumb.jpg"
+            thumb_path = settings.PHOTOS_DIR / thumb_filename
+            
+            # 4. Copy and compress file locally
+            high_res_bytes = None
+            thumb_bytes = None
+            
             try:
                 from PIL import ImageOps
                 with Image.open(src_path) as img:
-                    # Auto-rotate based on EXIF orientation data
                     img = ImageOps.exif_transpose(img)
                     
-                    # Optional: Resize high-resolution DSLR photos to a max of 2400px to save network bandwidth
+                    # Compress high resolution
                     max_size = 2400
                     width, height = img.size
                     if width > max_size or height > max_size:
@@ -157,14 +157,16 @@ class FolderWatcher:
                     else:
                         high_res_img = img
                     
-                    # Save as JPEG with quality=85 (highly optimized, target size 1-2 MB)
-                    high_res_img.convert('RGB').save(dest_path, 'JPEG', quality=85, optimize=True)
-                    logger.info(f"Compressed and saved new high-res photo: {dest_filename}")
+                    # Save locally and get bytes
+                    buffer_high = io.BytesIO()
+                    high_res_img.convert('RGB').save(buffer_high, 'JPEG', quality=85, optimize=True)
+                    high_res_bytes = buffer_high.getvalue()
                     
-                    # Generate and save compressed thumbnail (max 800px boundary, quality 65, target ~100KB)
+                    # Also save locally for recovery/fallback
+                    high_res_img.convert('RGB').save(dest_path, 'JPEG', quality=85, optimize=True)
+                    
+                    # Generate thumbnail
                     try:
-                        thumb_filename = f"{Path(dest_filename).stem}_thumb.jpg"
-                        thumb_path = settings.PHOTOS_DIR / thumb_filename
                         max_thumb_size = 800
                         if width > max_thumb_size or height > max_thumb_size:
                             if width > height:
@@ -177,36 +179,57 @@ class FolderWatcher:
                         else:
                             thumb_img = img
                         
+                        buffer_thumb = io.BytesIO()
+                        thumb_img.convert('RGB').save(buffer_thumb, 'JPEG', quality=65, optimize=True)
+                        thumb_bytes = buffer_thumb.getvalue()
+                        
+                        # Save locally
                         thumb_img.convert('RGB').save(thumb_path, 'JPEG', quality=65, optimize=True)
-                        logger.info(f"Compressed and saved new thumbnail photo: {thumb_filename}")
                     except Exception as thumb_err:
                         logger.error(f"Thumbnail generation failed: {thumb_err}")
             except Exception as e:
                 logger.error(f"Image compression failed: {e}. Falling back to copying raw file.")
                 shutil.copy2(src_path, dest_path)
-            
-            # 5. Insert into Database
-            new_photo = Photo(
-                id=photo_uuid,
+                with open(dest_path, 'rb') as f:
+                    high_res_bytes = f.read()
+
+            # 5. Upload to Supabase Storage
+            if high_res_bytes:
+                logger.info(f"Uploading high-res to Supabase Storage: {dest_filename}")
+                supabase_client.upload_file(dest_filename, high_res_bytes)
+                
+            if thumb_bytes:
+                logger.info(f"Uploading thumbnail to Supabase Storage: {thumb_filename}")
+                supabase_client.upload_file(thumb_filename, thumb_bytes)
+            else:
+                logger.warning(f"No thumbnail bytes generated, uploading high-res as thumbnail fallback...")
+                supabase_client.upload_file(thumb_filename, high_res_bytes)
+
+            # 6. Insert into Supabase database
+            new_photo_data = supabase_client.insert_photo(
+                photo_id=photo_uuid,
                 filename=dest_filename,
                 original_name=src_path.name,
-                event_id=active_event.id
+                event_id=active_event["id"]
             )
-            db.add(new_photo)
-            db.commit()
-            db.refresh(new_photo)
             
-            logger.info(f"Successfully processed and stored photo: {dest_filename}")
+            logger.info(f"Successfully processed, uploaded, and stored photo: {dest_filename}")
             
-            # 6. Notify web app about the new photo
+            # 7. Notify web app about the new photo
             if self.callback_func:
-                self.callback_func(new_photo)
+                class MockPhoto:
+                    def __init__(self, data):
+                        self.id = data["id"]
+                        self.filename = data["filename"]
+                        self.original_name = data.get("original_name", "")
+                        self.created_at = datetime.datetime.fromisoformat(data["created_at"].replace('Z', '+00:00')) if "created_at" in data else datetime.datetime.utcnow()
+                        self.event_id = data["event_id"]
+                
+                import datetime
+                self.callback_func(MockPhoto(new_photo_data))
                 
         except Exception as e:
             logger.error(f"Error in folder watcher photo processing: {e}")
-            db.rollback()
-        finally:
-            db.close()
 
 # Global instance
 folder_watcher = FolderWatcher()

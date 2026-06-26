@@ -8,8 +8,17 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 
 from app.config import settings
-from app.database import SessionLocal
-from app.models import Event, Photo
+import uuid
+import datetime
+from app import supabase_client
+
+class MockPhoto:
+    def __init__(self, data):
+        self.id = data["id"]
+        self.filename = data["filename"]
+        self.original_name = data.get("original_name", "")
+        self.created_at = datetime.datetime.fromisoformat(data["created_at"].replace('Z', '+00:00')) if "created_at" in data else datetime.datetime.utcnow()
+        self.event_id = data["event_id"]
 
 logger = logging.getLogger("camera")
 
@@ -120,26 +129,24 @@ class CameraManager:
         img.save(buf, format='JPEG', quality=80)
         return buf.getvalue()
 
-    def capture_photo(self) -> Photo:
-        """Captures the current frame from the camera stream, saves it to disk and registers it in the DB."""
+    def capture_photo(self):
+        """Captures the current frame from the camera stream, saves it locally and uploads/registers in Supabase."""
         with self.lock:
             frame = self.frame
             
         if frame is None:
             raise RuntimeError("Camera has no active frame. Is it connected and turned on?")
             
-        db = SessionLocal()
         try:
-            # 1. Get active event
-            active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
+            # 1. Get active event from Supabase
+            active_event = supabase_client.get_active_event()
             if not active_event:
-                active_event = Event(name="Default Event")
-                db.add(active_event)
-                db.commit()
-                db.refresh(active_event)
+                active_event = supabase_client.create_event("My First Vixora Event")
+                logger.info("No active event found. Created default event in Supabase.")
 
             # 2. Generate unique name
-            photo_id = "cap_" + str(int(time.time())) + "_" + str(threading.get_ident())
+            photo_uuid = str(uuid.uuid4())
+            photo_id = f"cap_{photo_uuid[:8]}"
             dest_filename = f"{photo_id}.jpg"
             dest_path = settings.PHOTOS_DIR / dest_filename
             
@@ -149,10 +156,13 @@ class CameraManager:
             if not ret:
                 raise RuntimeError("Failed to encode frame to JPEG.")
                 
+            high_res_bytes = buffer.tobytes()
             with open(dest_path, 'wb') as f:
-                f.write(buffer.tobytes())
+                f.write(high_res_bytes)
 
             # Generate and save compressed thumbnail (max 800px boundary, quality 65, target ~100KB)
+            thumb_bytes = None
+            thumb_filename = f"{photo_id}_thumb.jpg"
             try:
                 max_thumb_size = 800
                 height, width = frame.shape[:2]
@@ -169,38 +179,44 @@ class CameraManager:
                 
                 ret_thumb, buffer_thumb = cv2.imencode('.jpg', thumb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
                 if ret_thumb:
-                    thumb_filename = f"{photo_id}_thumb.jpg"
+                    thumb_bytes = buffer_thumb.tobytes()
                     thumb_path = settings.PHOTOS_DIR / thumb_filename
                     with open(thumb_path, 'wb') as f:
-                        f.write(buffer_thumb.tobytes())
+                        f.write(thumb_bytes)
                     logger.info(f"Compressed and saved new thumbnail photo: {thumb_filename}")
             except Exception as thumb_err:
                 logger.error(f"Thumbnail generation failed in camera: {thumb_err}")
 
-            # 4. Insert into database
-            new_photo = Photo(
-                id=photo_id,
+            # 4. Upload to Supabase Storage
+            logger.info(f"Uploading captured photo to Supabase Storage: {dest_filename}")
+            supabase_client.upload_file(dest_filename, high_res_bytes)
+            
+            if thumb_bytes:
+                logger.info(f"Uploading captured thumbnail to Supabase Storage: {thumb_filename}")
+                supabase_client.upload_file(thumb_filename, thumb_bytes)
+            else:
+                logger.warning("No thumbnail bytes generated, uploading high-res as thumbnail fallback...")
+                supabase_client.upload_file(thumb_filename, high_res_bytes)
+
+            # 5. Insert into Supabase database
+            new_photo_data = supabase_client.insert_photo(
+                photo_id=photo_uuid,
                 filename=dest_filename,
                 original_name="HDMI_Capture.jpg",
-                event_id=active_event.id
+                event_id=active_event["id"]
             )
-            db.add(new_photo)
-            db.commit()
-            db.refresh(new_photo)
             
-            logger.info(f"Captured photo from HDMI stream: {dest_filename}")
+            new_photo = MockPhoto(new_photo_data)
+            logger.info(f"Captured and registered photo from HDMI stream: {dest_filename}")
             
-            # 5. Trigger callback for WS clients
+            # 6. Trigger callback for WS clients
             if self.callback_func:
                 self.callback_func(new_photo)
                 
             return new_photo
         except Exception as e:
             logger.error(f"Error in HDMI stream capture: {e}")
-            db.rollback()
             raise e
-        finally:
-            db.close()
 
 # Global instance
 camera_manager = CameraManager()

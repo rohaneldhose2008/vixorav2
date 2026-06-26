@@ -1,67 +1,106 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, QrCode } from 'lucide-react';
+import { Camera } from 'lucide-react';
+import { supabase } from '../supabaseClient';
 
 function ClientDisplay() {
   const [photos, setPhotos] = useState([]);
   const [status, setStatus] = useState("connecting");
   const [currentPage, setCurrentPage] = useState(0);
-  const BACKEND_URL = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/$/, '');
+
+  const getSupabaseImageUrl = (filename, isThumb = false) => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    if (!filename) return '';
+    if (isThumb) {
+      const extIndex = filename.lastIndexOf('.');
+      if (extIndex !== -1) {
+        const stem = filename.substring(0, extIndex);
+        const ext = filename.substring(extIndex);
+        return `${supabaseUrl}/storage/v1/object/public/photos/${stem}_thumb${ext}`;
+      }
+    }
+    return `${supabaseUrl}/storage/v1/object/public/photos/${filename}`;
+  };
 
   useEffect(() => {
-    const wsProtocol = BACKEND_URL.startsWith('https') ? 'wss:' : 'ws:';
-    const wsHost = BACKEND_URL.replace(/^https?:\/\//, '');
-    const wsUrl = `${wsProtocol}//${wsHost}/api/ws/display`;
-    
-    let ws;
-    let reconnectTimeout;
+    let active = true;
+    let photosSubscription = null;
+    let eventsSubscription = null;
 
-    const connect = () => {
+    const initSupabase = async () => {
       setStatus("connecting");
-      ws = new WebSocket(wsUrl);
+      try {
+        // 1. Get active event
+        const { data: activeEvents, error: eventErr } = await supabase
+          .from('events')
+          .select('*')
+          .eq('is_active', true)
+          .order('id', { ascending: false })
+          .limit(1);
 
-      ws.onopen = () => {
-        setStatus("connected");
-        console.log("WebSocket display client connected.");
-      };
+        if (eventErr) throw eventErr;
 
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          console.log("WebSocket event:", payload);
+        if (activeEvents && activeEvents.length > 0) {
+          const activeEvent = activeEvents[0];
           
-          if (payload.event === "init") {
-            setPhotos(payload.data || []);
-            setCurrentPage(0);
-          } else if (payload.event === "new_photo") {
-            // Add new photo to the front of the list without slicing, and jump to page 1
-            setPhotos(prev => [payload.data, ...prev]);
-            setCurrentPage(0);
-          } else if (payload.event === "wiped" || payload.event === "event_changed") {
-            setPhotos([]);
-            setCurrentPage(0);
+          // 2. Get photos for the active event
+          const { data: photosData, error: photosErr } = await supabase
+            .from('photos')
+            .select('*')
+            .eq('event_id', activeEvent.id)
+            .order('created_at', { ascending: false });
+
+          if (photosErr) throw photosErr;
+
+          if (active) {
+            setPhotos(photosData || []);
+            setStatus("connected");
           }
-        } catch (e) {
-          console.error("Error parsing WS message:", e);
+
+          // 3. Subscribe to Realtime inserts/deletes on photos table
+          photosSubscription = supabase
+            .channel('photos-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'photos' }, (payload) => {
+              console.log("Photo change detected:", payload);
+              if (payload.eventType === 'INSERT') {
+                if (payload.new.event_id === activeEvent.id) {
+                  setPhotos(prev => [payload.new, ...prev]);
+                  setCurrentPage(0);
+                }
+              } else if (payload.eventType === 'DELETE') {
+                setPhotos(prev => prev.filter(p => p.id !== payload.old.id));
+              }
+            })
+            .subscribe();
+        } else {
+          if (active) {
+            setPhotos([]);
+            setStatus("connected");
+          }
         }
-      };
 
-      ws.onclose = () => {
-        setStatus("disconnected");
-        console.log("WebSocket closed. Retrying in 3 seconds...");
-        reconnectTimeout = setTimeout(connect, 3000);
-      };
+        // 4. Subscribe to Realtime changes on events table (in case event is wiped/changed)
+        eventsSubscription = supabase
+          .channel('events-changes')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, () => {
+            console.log("Event table changed, refreshing dashboard...");
+            initSupabase();
+          })
+          .subscribe();
 
-      ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
-        ws.close();
-      };
+      } catch (err) {
+        console.error("Supabase connection error:", err);
+        if (active) {
+          setStatus("disconnected");
+        }
+      }
     };
 
-    connect();
+    initSupabase();
 
     return () => {
-      if (ws) ws.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      active = false;
+      if (photosSubscription) supabase.removeChannel(photosSubscription);
+      if (eventsSubscription) supabase.removeChannel(eventsSubscription);
     };
   }, []);
 
@@ -118,6 +157,9 @@ function ClientDisplay() {
         <div className="display-grid-container" style={gridStyle}>
           {pagePhotos.map((photo) => {
             const isLatest = photo.id === photos[0]?.id;
+            const downloadPageUrl = `${window.location.origin}/download/${photo.id}`;
+            const qrCodeApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(downloadPageUrl)}`;
+
             return (
               <div 
                 key={photo.id} 
@@ -127,7 +169,7 @@ function ClientDisplay() {
                 
                 {/* Captured Photo */}
                 <div className="display-img-wrapper">
-                  <img src={`${BACKEND_URL}/api/photos/${photo.id}/thumbnail`} alt="Captured moment" />
+                  <img src={getSupabaseImageUrl(photo.filename, true)} alt="Captured moment" />
                 </div>
                 
                 {/* QR Code and Instructions underneath */}
@@ -136,8 +178,7 @@ function ClientDisplay() {
                     width: `${qrSize}px`, 
                     height: `${qrSize}px`
                   }}>
-                    {/* Render QR code via absolute path pointing to Vercel */}
-                    <img src={`${BACKEND_URL}/api/photos/${photo.id}/qrcode?public_url=${encodeURIComponent(window.location.origin)}`} alt="Scan QR" />
+                    <img src={qrCodeApiUrl} alt="Scan QR" />
                   </div>
                   {showQrText && (
                     <div className="display-qr-text">

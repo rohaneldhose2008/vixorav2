@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     
     # Security
     ADMIN_PASSCODE: str = os.getenv("ADMIN_PASSCODE", "9037352739")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     
     # Camera Index for HDMI Capture mode
     CAMERA_INDEX: int = int(os.getenv("CAMERA_INDEX", "0"))

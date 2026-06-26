@@ -9,13 +9,12 @@ from io import BytesIO
 
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
 
+import datetime
 from app.config import settings
-from app.database import engine, Base, get_db, SessionLocal
-from app.models import Event, Photo
+from app import supabase_client
 from app.schemas import (
     StatsResponse, EventCreate, EventResponse, PhotoResponse,
     AdminLoginRequest, SettingsResponse, SettingsUpdate
@@ -40,8 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize database schema
-Base.metadata.create_all(bind=engine)
+# Database schema managed in Supabase
 
 # Keep track of active WebSocket connections
 class ConnectionManager:
@@ -112,89 +110,23 @@ def check_admin(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid admin passcode.")
     return True
 
-async def detect_ngrok_tunnel_task():
-    """Background task to poll Ngrok local API and update PUBLIC_URL automatically."""
-    import urllib.request
-    import json
-    
-    logger.info("Starting background Ngrok URL auto-detection for port 8001...")
-    for _ in range(20): # Retry for up to 60 seconds (20 attempts * 3 seconds)
-        await asyncio.sleep(3.0)
-        # Check both 4040 and 4041 API ports in case another Ngrok is already running
-        for api_port in (4040, 4041):
-            try:
-                req = urllib.request.Request(f"http://localhost:{api_port}/api/tunnels", headers={'User-Agent': 'Mozilla/5.0'})
-                
-                def fetch():
-                    with urllib.request.urlopen(req, timeout=1.0) as response:
-                        return response.read()
-                
-                loop = asyncio.get_running_loop()
-                res_bytes = await loop.run_in_executor(None, fetch)
-                data = json.loads(res_bytes.decode())
-                
-                tunnels = data.get("tunnels", [])
-                for tunnel in tunnels:
-                    config = tunnel.get("config", {})
-                    addr = config.get("addr", "")
-                    # Verify this tunnel points to our port 8001 and is HTTPS
-                    if "8001" in addr and tunnel.get("proto") == "https":
-                        public_url = tunnel.get("public_url")
-                        if public_url:
-                            settings.PUBLIC_URL = public_url.rstrip('/')
-                            logger.info(f"Ngrok (API port {api_port}) auto-detected and registered: {settings.PUBLIC_URL}")
-                            return
-            except Exception:
-                pass
-    logger.warning("Ngrok auto-detection timed out.")
-
-async def detect_cloudflare_tunnel_task():
-    """Background task to read cloudflared.log and parse the dynamic trycloudflare.com URL."""
-    import re
-    logger.info("Starting background Cloudflare URL auto-detection...")
-    log_path = Path(settings.BASE_DIR) / "cloudflared.log"
-    alternative_log_path = Path(settings.BASE_DIR).parent / "cloudflared.log"
-    
-    for _ in range(30): # Poll for up to 90 seconds (30 attempts * 3 seconds)
-        await asyncio.sleep(3.0)
-        for path in (log_path, alternative_log_path):
-            if path.exists():
-                try:
-                    content = path.read_text(encoding="utf-8", errors="ignore")
-                    match = re.search(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com", content)
-                    if match:
-                        settings.PUBLIC_URL = match.group(0).rstrip('/')
-                        logger.info(f"Cloudflare auto-detected and registered: {settings.PUBLIC_URL}")
-                        return
-                except Exception as e:
-                    logger.warning(f"Error reading Cloudflare log file {path}: {e}")
-    logger.warning("Cloudflare auto-detection timed out.")
-
 # Server Startup
 @app.on_event("startup")
 async def startup_event():
     global main_loop
     main_loop = asyncio.get_running_loop()
     
-    # Auto-initialize default active event if none exists
-    db = SessionLocal()
+    # Auto-initialize default active event if none exists in Supabase
     try:
-        active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
+        active_event = supabase_client.get_active_event()
         if not active_event:
-            active_event = Event(name="My First Vixora Event")
-            db.add(active_event)
-            db.commit()
-            logger.info("Initialized default active event.")
-    finally:
-        db.close()
+            supabase_client.create_event("My First Vixora Event")
+            logger.info("Initialized default active event in Supabase.")
+    except Exception as e:
+        logger.error(f"Failed to auto-initialize default active event: {e}")
 
     # Start services depending on configured capture mode
     start_capture_services()
-    
-    # Launch Ngrok auto-detection background task
-    asyncio.create_task(detect_ngrok_tunnel_task())
-    # Launch Cloudflare auto-detection background task
-    asyncio.create_task(detect_cloudflare_tunnel_task())
 
 def start_capture_services():
     """Starts either the folder watcher or HDMI camera depending on the active setting."""
@@ -225,21 +157,9 @@ def admin_login(payload: AdminLoginRequest):
     raise HTTPException(status_code=401, detail="Invalid admin passcode.")
 
 @app.get("/api/admin/stats", response_model=StatsResponse)
-def get_stats(db: Session = Depends(get_db), authenticated: bool = Depends(check_admin)):
-    total_events = db.query(Event).count()
-    total_photos = db.query(Photo).count()
-    
-    current_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
-    
-    current_name = current_event.name if current_event else None
-    current_count = db.query(Photo).filter(Photo.event_id == current_event.id).count() if current_event else 0
-    
-    return {
-        "total_events": total_events,
-        "total_photos": total_photos,
-        "current_event_name": current_name,
-        "current_event_photos_count": current_count
-    }
+def get_stats(authenticated: bool = Depends(check_admin)):
+    stats = supabase_client.get_stats()
+    return stats
 
 @app.get("/api/admin/settings", response_model=SettingsResponse)
 def get_admin_settings(authenticated: bool = Depends(check_admin)):
@@ -275,70 +195,76 @@ def update_admin_settings(payload: SettingsUpdate, authenticated: bool = Depends
     }
 
 @app.post("/api/admin/event", response_model=EventResponse)
-def create_event(payload: EventCreate, db: Session = Depends(get_db), authenticated: bool = Depends(check_admin)):
-    # Deactivate existing active events
-    db.query(Event).filter(Event.is_active == True).update({"is_active": False})
-    
-    new_event = Event(name=payload.name, is_active=True)
-    db.add(new_event)
-    db.commit()
-    db.refresh(new_event)
+def create_event(payload: EventCreate, authenticated: bool = Depends(check_admin)):
+    new_event = supabase_client.create_event(payload.name)
     
     # Restart services so new captures map to the new event
     start_capture_services()
     
     # Notify connected displays that event changed
     asyncio.run_coroutine_threadsafe(
-        manager.broadcast({"event": "event_changed", "data": {"name": new_event.name}}),
+        manager.broadcast({"event": "event_changed", "data": {"name": new_event["name"]}}),
         main_loop
     )
 
+    created_at_dt = datetime.datetime.utcnow()
+    if "created_at" in new_event:
+        try:
+            created_at_dt = datetime.datetime.fromisoformat(new_event["created_at"].replace('Z', '+00:00'))
+        except Exception:
+            pass
+
     return {
-        "id": new_event.id,
-        "name": new_event.name,
-        "created_at": new_event.created_at,
-        "is_active": new_event.is_active,
+        "id": new_event["id"],
+        "name": new_event["name"],
+        "created_at": created_at_dt,
+        "is_active": new_event["is_active"],
         "photos_count": 0
     }
 
 @app.get("/api/admin/photos", response_model=List[PhotoResponse])
-def get_event_photos(request: Request, db: Session = Depends(get_db), authenticated: bool = Depends(check_admin)):
-    active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
-    if not active_event:
-        return []
-        
-    photos = db.query(Photo).filter(Photo.event_id == active_event.id).order_by(Photo.created_at.desc()).all()
+def get_event_photos(request: Request, authenticated: bool = Depends(check_admin)):
+    photos = supabase_client.get_event_photos()
     
     response = []
     base_request_url = str(request.base_url)
-    db_changed = False
     
     for photo in photos:
-        file_path = settings.PHOTOS_DIR / photo.filename
+        # Check if the photo is deleted from local disk (on the admin computer)
+        file_path = settings.PHOTOS_DIR / photo["filename"]
         if not file_path.exists():
-            db.delete(photo)
-            db_changed = True
+            # Delete from Supabase
+            supabase_client.delete_photo(photo["id"])
+            supabase_client.delete_file(photo["filename"])
+            filename_path = Path(photo["filename"])
+            thumb_filename = f"{filename_path.stem}_thumb.jpg"
+            supabase_client.delete_file(thumb_filename)
             continue
             
-        dl_url, qr_url = get_photo_urls(photo.id, base_request_url)
+        dl_url, qr_url = get_photo_urls(photo["id"], base_request_url)
+        
+        created_at_dt = datetime.datetime.utcnow()
+        if "created_at" in photo:
+            try:
+                created_at_dt = datetime.datetime.fromisoformat(photo["created_at"].replace('Z', '+00:00'))
+            except Exception:
+                pass
+                
         response.append({
-            "id": photo.id,
-            "filename": photo.filename,
-            "original_name": photo.original_name,
-            "created_at": photo.created_at,
-            "event_id": photo.event_id,
+            "id": photo["id"],
+            "filename": photo["filename"],
+            "original_name": photo.get("original_name", ""),
+            "created_at": created_at_dt,
+            "event_id": photo["event_id"],
             "download_url": dl_url,
             "qrcode_url": qr_url
         })
         
-    if db_changed:
-        db.commit()
-        
     return response
 
 @app.post("/api/admin/wipe")
-def wipe_all_data(db: Session = Depends(get_db), authenticated: bool = Depends(check_admin)):
-    """Wipes all photos from the database and deletes local photo files from disk."""
+def wipe_all_data(authenticated: bool = Depends(check_admin)):
+    """Wipes all photos from Supabase database and storage, and deletes local photo files from disk."""
     logger.info("Wiping all session data...")
     
     # Stop capture services temporarily
@@ -346,12 +272,10 @@ def wipe_all_data(db: Session = Depends(get_db), authenticated: bool = Depends(c
     camera_manager.stop()
     
     try:
-        # Delete from DB
-        db.query(Photo).delete()
-        db.query(Event).delete()
-        db.commit()
+        # 1. Clean Supabase database and storage
+        supabase_client.wipe_all_data()
         
-        # Delete files from photos folder
+        # 2. Delete files from local photos folder
         if settings.PHOTOS_DIR.exists():
             for file in settings.PHOTOS_DIR.iterdir():
                 if file.is_file():
@@ -360,7 +284,7 @@ def wipe_all_data(db: Session = Depends(get_db), authenticated: bool = Depends(c
                     except Exception as e:
                         logger.error(f"Failed to delete file {file}: {e}")
                         
-        # Delete files from watch folder
+        # 3. Delete files from local watch folder
         if settings.WATCH_DIR.exists():
             for file in settings.WATCH_DIR.iterdir():
                 if file.is_file() and file.suffix.lower() in ('.jpg', '.jpeg', '.png'):
@@ -368,11 +292,6 @@ def wipe_all_data(db: Session = Depends(get_db), authenticated: bool = Depends(c
                         file.unlink()
                     except Exception as e:
                         logger.error(f"Failed to delete watch file {file}: {e}")
-        
-        # Create a new default event
-        default_event = Event(name="My First Vixora Event", is_active=True)
-        db.add(default_event)
-        db.commit()
         
         logger.info("Wipe complete. Restarting services.")
         start_capture_services()
@@ -383,9 +302,8 @@ def wipe_all_data(db: Session = Depends(get_db), authenticated: bool = Depends(c
             main_loop
         )
         
-        return {"message": "All database records and photo files successfully wiped."}
+        return {"message": "All Supabase records, storage bucket files, and local photo files successfully wiped."}
     except Exception as e:
-        db.rollback()
         start_capture_services()
         raise HTTPException(status_code=500, detail=f"Failed to wipe data: {e}")
 
@@ -434,51 +352,69 @@ def trigger_manual_capture(request: Request, authenticated: bool = Depends(check
 # ==================== PUBLIC / GUEST ENDPOINTS ====================
 
 @app.get("/api/photos/{photo_id}/image")
-def get_photo_image(photo_id: str, db: Session = Depends(get_db)):
-    """Serves the raw photo image file."""
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
+def get_photo_image(photo_id: str):
+    """Serves the raw photo image file, redirecting to Supabase if missing from local disk."""
+    try:
+        res = supabase_client._request(f"/rest/v1/photos?id=eq.{photo_id}&select=*")
+        if not res or not isinstance(res, list) or len(res) == 0:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        photo = res[0]
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Photo not found in Supabase: {e}")
+
+    file_path = settings.PHOTOS_DIR / photo["filename"]
+    if file_path.exists():
+        return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.get("original_name") or photo["filename"])
         
-    file_path = settings.PHOTOS_DIR / photo.filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Physical photo file missing from disk")
-        
-    return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.original_name or photo.filename)
+    # Redirect to Supabase Storage public CDN
+    supabase_url = settings.SUPABASE_URL.rstrip('/')
+    public_url = f"{supabase_url}/storage/v1/object/public/photos/{photo['filename']}"
+    return RedirectResponse(public_url)
 
 @app.get("/api/photos/{photo_id}/thumbnail")
-def get_photo_thumbnail(photo_id: str, db: Session = Depends(get_db)):
+def get_photo_thumbnail(photo_id: str):
     """Serves the compressed thumbnail image file, falling back to the high-res image if missing."""
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-        
-    filename_path = Path(photo.filename)
+    try:
+        res = supabase_client._request(f"/rest/v1/photos?id=eq.{photo_id}&select=*")
+        if not res or not isinstance(res, list) or len(res) == 0:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        photo = res[0]
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Photo not found in Supabase: {e}")
+
+    filename_path = Path(photo["filename"])
     thumb_filename = f"{filename_path.stem}_thumb.jpg"
     thumb_path = settings.PHOTOS_DIR / thumb_filename
     
     if thumb_path.exists():
         return FileResponse(str(thumb_path), media_type="image/jpeg", filename=thumb_filename)
         
-    # Fallback to high-resolution photo file
-    file_path = settings.PHOTOS_DIR / photo.filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Physical photo file missing from disk")
+    # Fallback to local high-res
+    file_path = settings.PHOTOS_DIR / photo["filename"]
+    if file_path.exists():
+        return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.get("original_name") or photo["filename"])
         
-    return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.original_name or photo.filename)
+    # Redirect to Supabase Storage public CDN for thumbnail
+    supabase_url = settings.SUPABASE_URL.rstrip('/')
+    public_url = f"{supabase_url}/storage/v1/object/public/photos/{thumb_filename}"
+    return RedirectResponse(public_url)
 
 @app.get("/api/photos/{photo_id}/qrcode")
-def get_photo_qrcode(photo_id: str, request: Request, public_url: Optional[str] = None, db: Session = Depends(get_db)):
+def get_photo_qrcode(photo_id: str, request: Request, public_url: Optional[str] = None):
     """Generates the QR code pointing to the download URL dynamically in-memory."""
-    photo = db.query(Photo).filter(Photo.id == photo_id).first()
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
+    try:
+        res = supabase_client._request(f"/rest/v1/photos?id=eq.{photo_id}&select=id")
+        if not res or not isinstance(res, list) or len(res) == 0:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        photo = res[0]
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Photo not found in Supabase: {e}")
 
     # Generate public link
     if public_url:
-        download_url = f"{public_url.rstrip('/')}/download/{photo.id}"
+        download_url = f"{public_url.rstrip('/')}/download/{photo['id']}"
     else:
-        download_url, _ = get_photo_urls(photo.id, str(request.base_url))
+        download_url, _ = get_photo_urls(photo['id'], str(request.base_url))
     
     # Generate QR Code
     qr = qrcode.QRCode(
@@ -505,34 +441,32 @@ async def websocket_display_endpoint(websocket: WebSocket):
     """Slideshow/TV display websocket connection."""
     await manager.connect(websocket)
     
-    # Upon connection, push the latest 20 photos from the database
-    db = SessionLocal()
     try:
-        active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
+        active_event = supabase_client.get_active_event()
         if active_event:
-            latest_photos = db.query(Photo).filter(Photo.event_id == active_event.id).order_by(Photo.created_at.desc()).limit(100).all()
+            latest_photos = supabase_client.get_event_photos()
             photos_data = []
-            db_changed = False
             for photo in latest_photos:
-                file_path = settings.PHOTOS_DIR / photo.filename
+                file_path = settings.PHOTOS_DIR / photo["filename"]
                 if not file_path.exists():
-                    db.delete(photo)
-                    db_changed = True
+                    # Delete from Supabase
+                    supabase_client.delete_photo(photo["id"])
+                    supabase_client.delete_file(photo["filename"])
+                    filename_path = Path(photo["filename"])
+                    thumb_filename = f"{filename_path.stem}_thumb.jpg"
+                    supabase_client.delete_file(thumb_filename)
                     continue
                     
-                dl_url, qr_url = get_photo_urls(photo.id, str(websocket.base_url))
+                dl_url, qr_url = get_photo_urls(photo["id"], str(websocket.base_url))
                 photos_data.append({
-                    "id": photo.id,
-                    "filename": photo.filename,
-                    "original_name": photo.original_name,
-                    "created_at": photo.created_at.isoformat(),
-                    "event_id": photo.event_id,
+                    "id": photo["id"],
+                    "filename": photo["filename"],
+                    "original_name": photo.get("original_name", ""),
+                    "created_at": photo.get("created_at", ""),
+                    "event_id": photo["event_id"],
                     "download_url": dl_url,
                     "qrcode_url": qr_url
                 })
-            
-            if db_changed:
-                db.commit()
             
             await websocket.send_json({
                 "event": "init",
@@ -540,8 +474,6 @@ async def websocket_display_endpoint(websocket: WebSocket):
             })
     except Exception as e:
         logger.error(f"Error in websocket initialization: {e}")
-    finally:
-        db.close()
 
     try:
         while True:
@@ -557,7 +489,7 @@ async def websocket_display_endpoint(websocket: WebSocket):
 # ==================== STATIC FRONTEND SERVING & ROUTING ====================
 
 @app.get("/download/{photo_id}")
-async def serve_download_page(photo_id: str, db: Session = Depends(get_db)):
+async def serve_download_page(photo_id: str):
     """Serves the index.html fallback for /download/{photo_id} so the guest gets the React SPA frontend."""
     index_path = Path(settings.STATIC_DIR) / "index.html"
     if index_path.exists():

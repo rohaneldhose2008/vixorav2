@@ -1,48 +1,70 @@
 import React, { useState, useEffect } from 'react';
 import { Download, Camera, Loader2, AlertCircle } from 'lucide-react';
+import { supabase } from '../supabaseClient';
 
 function GuestDownload({ photoId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [imageSrc, setImageSrc] = useState('');
+  const [photoInfo, setPhotoInfo] = useState(null);
   const [downloading, setDownloading] = useState(false);
-  
-  const BACKEND_URL = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/$/, '');
-  const thumbnailUrl = `${BACKEND_URL}/api/photos/${photoId}/thumbnail`;
-  const highResUrl = `${BACKEND_URL}/api/photos/${photoId}/image`;
+
+  const getSupabaseImageUrl = (filename, isThumb = false) => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    if (!filename) return '';
+    if (isThumb) {
+      const extIndex = filename.lastIndexOf('.');
+      if (extIndex !== -1) {
+        const stem = filename.substring(0, extIndex);
+        const ext = filename.substring(extIndex);
+        return `${supabaseUrl}/storage/v1/object/public/photos/${stem}_thumb${ext}`;
+      }
+    }
+    return `${supabaseUrl}/storage/v1/object/public/photos/${filename}`;
+  };
 
   useEffect(() => {
     let active = true;
     let localUrl = '';
 
-    setLoading(true);
-    setError(null);
+    const fetchPhotoDetails = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { data, error: fetchErr } = await supabase
+          .from('photos')
+          .select('*')
+          .eq('id', photoId)
+          .single();
 
-    // Fetch the thumbnail photo as a blob with the bypass header
-    fetch(thumbnailUrl, {
-      headers: {
-        'ngrok-skip-browser-warning': 'true'
-      }
-    })
-      .then((res) => {
-        if (!res.ok) {
+        if (fetchErr || !data) {
           throw new Error("This photo is no longer available or the event has ended.");
         }
-        return res.blob();
-      })
-      .then((blob) => {
+
         if (active) {
-          localUrl = window.URL.createObjectURL(blob);
-          setImageSrc(localUrl);
-          setLoading(false);
+          setPhotoInfo(data);
+          
+          // Fetch the thumbnail image as a blob for preview
+          const thumbUrl = getSupabaseImageUrl(data.filename, true);
+          const res = await fetch(thumbUrl);
+          if (!res.ok) throw new Error("Failed to load preview image.");
+          
+          const blob = await res.blob();
+          if (active) {
+            localUrl = window.URL.createObjectURL(blob);
+            setImageSrc(localUrl);
+            setLoading(false);
+          }
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         if (active) {
           setError(err.message);
           setLoading(false);
         }
-      });
+      }
+    };
+
+    fetchPhotoDetails();
 
     return () => {
       active = false;
@@ -52,34 +74,28 @@ function GuestDownload({ photoId }) {
     };
   }, [photoId]);
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
+    if (!photoInfo) return;
     setDownloading(true);
-    fetch(highResUrl, {
-      headers: {
-        'ngrok-skip-browser-warning': 'true'
-      }
-    })
-      .then((res) => {
-        if (!res.ok) {
-          throw new Error("Failed to download high-resolution image.");
-        }
-        return res.blob();
-      })
-      .then((blob) => {
-        const localUrl = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = localUrl;
-        link.download = `Vixora_${photoId}.jpg`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(localUrl);
-        setDownloading(false);
-      })
-      .catch((err) => {
-        alert(err.message);
-        setDownloading(false);
-      });
+    try {
+      const highResUrl = getSupabaseImageUrl(photoInfo.filename, false);
+      const res = await fetch(highResUrl);
+      if (!res.ok) throw new Error("Failed to download high-resolution image.");
+
+      const blob = await res.blob();
+      const localUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = localUrl;
+      link.download = `Vixora_${photoId}.jpg`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(localUrl);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setDownloading(false);
+    }
   };
 
   return (
