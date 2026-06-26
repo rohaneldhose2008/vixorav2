@@ -10,7 +10,8 @@ function GuestDownload({ photoId }) {
   const [downloading, setDownloading] = useState(false);
 
   const getSupabaseImageUrl = (filename, isThumb = false) => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    let supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+    supabaseUrl = supabaseUrl.replace(/\/$/, '');
     if (!filename) return '';
     if (isThumb) {
       const extIndex = filename.lastIndexOf('.');
@@ -91,7 +92,14 @@ function GuestDownload({ photoId }) {
       document.body.removeChild(link);
       window.URL.revokeObjectURL(localUrl);
     } catch (err) {
-      alert(err.message);
+      console.warn("Direct blob download failed, falling back to new tab redirect:", err);
+      // Fallback: open high-res image directly in a new tab so mobile/CORS works 100% of the time
+      try {
+        const highResUrl = getSupabaseImageUrl(photoInfo.filename, false);
+        window.open(highResUrl, '_blank');
+      } catch (e) {
+        alert("Failed to open image link: " + e.message);
+      }
     } finally {
       setDownloading(false);
     }

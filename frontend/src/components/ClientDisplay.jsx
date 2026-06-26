@@ -8,7 +8,8 @@ function ClientDisplay() {
   const [currentPage, setCurrentPage] = useState(0);
 
   const getSupabaseImageUrl = (filename, isThumb = false) => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+    let supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+    supabaseUrl = supabaseUrl.replace(/\/$/, '');
     if (!filename) return '';
     if (isThumb) {
       const extIndex = filename.lastIndexOf('.');
