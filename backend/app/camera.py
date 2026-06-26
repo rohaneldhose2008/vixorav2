@@ -1,3 +1,4 @@
+import os
 import cv2
 import time
 import threading
@@ -143,12 +144,38 @@ class CameraManager:
             dest_path = settings.PHOTOS_DIR / dest_filename
             
             # 3. Save frame high resolution
-            ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 98])
+            # Use quality=85 (highly optimized, target size 1-2 MB)
+            ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
             if not ret:
                 raise RuntimeError("Failed to encode frame to JPEG.")
                 
             with open(dest_path, 'wb') as f:
                 f.write(buffer.tobytes())
+
+            # Generate and save compressed thumbnail (max 800px boundary, quality 65, target ~100KB)
+            try:
+                max_thumb_size = 800
+                height, width = frame.shape[:2]
+                if width > max_thumb_size or height > max_thumb_size:
+                    if width > height:
+                        thumb_w = max_thumb_size
+                        thumb_h = int(height * (max_thumb_size / width))
+                    else:
+                        thumb_h = max_thumb_size
+                        thumb_w = int(width * (max_thumb_size / height))
+                    thumb_frame = cv2.resize(frame, (thumb_w, thumb_h), interpolation=cv2.INTER_AREA)
+                else:
+                    thumb_frame = frame.copy()
+                
+                ret_thumb, buffer_thumb = cv2.imencode('.jpg', thumb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                if ret_thumb:
+                    thumb_filename = f"{photo_id}_thumb.jpg"
+                    thumb_path = settings.PHOTOS_DIR / thumb_filename
+                    with open(thumb_path, 'wb') as f:
+                        f.write(buffer_thumb.tobytes())
+                    logger.info(f"Compressed and saved new thumbnail photo: {thumb_filename}")
+            except Exception as thumb_err:
+                logger.error(f"Thumbnail generation failed in camera: {thumb_err}")
 
             # 4. Insert into database
             new_photo = Photo(

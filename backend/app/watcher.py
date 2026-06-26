@@ -2,6 +2,7 @@ import os
 import time
 import shutil
 import logging
+import threading
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -17,6 +18,8 @@ class NewPhotoHandler(FileSystemEventHandler):
     def __init__(self, callback_func):
         super().__init__()
         self.callback_func = callback_func
+        self.processed_files = set()
+        self.lock = threading.Lock()
 
     def on_created(self, event):
         if event.is_directory:
@@ -26,6 +29,13 @@ class NewPhotoHandler(FileSystemEventHandler):
         # Check if the file is an image
         if file_path.suffix.lower() not in ('.jpg', '.jpeg', '.png'):
             return
+
+        filename = file_path.name
+        with self.lock:
+            if filename in self.processed_files:
+                logger.info(f"File {filename} already processed or scheduled. Skipping duplicate event.")
+                return
+            self.processed_files.add(filename)
 
         logger.info(f"New file detected in watch folder: {file_path}")
         # Run processing in a safe way
@@ -143,11 +153,34 @@ class FolderWatcher:
                         else:
                             new_height = max_size
                             new_width = int(width * (max_size / height))
-                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        high_res_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    else:
+                        high_res_img = img
                     
-                    # Save as JPEG with quality=85 (highly optimized)
-                    img.convert('RGB').save(dest_path, 'JPEG', quality=85, optimize=True)
-                logger.info(f"Compressed and saved new photo: {dest_filename}")
+                    # Save as JPEG with quality=85 (highly optimized, target size 1-2 MB)
+                    high_res_img.convert('RGB').save(dest_path, 'JPEG', quality=85, optimize=True)
+                    logger.info(f"Compressed and saved new high-res photo: {dest_filename}")
+                    
+                    # Generate and save compressed thumbnail (max 800px boundary, quality 65, target ~100KB)
+                    try:
+                        thumb_filename = f"{Path(dest_filename).stem}_thumb.jpg"
+                        thumb_path = settings.PHOTOS_DIR / thumb_filename
+                        max_thumb_size = 800
+                        if width > max_thumb_size or height > max_thumb_size:
+                            if width > height:
+                                new_thumb_w = max_thumb_size
+                                new_thumb_h = int(height * (max_thumb_size / width))
+                            else:
+                                new_thumb_h = max_thumb_size
+                                new_thumb_w = int(width * (max_thumb_size / height))
+                            thumb_img = img.resize((new_thumb_w, new_thumb_h), Image.Resampling.LANCZOS)
+                        else:
+                            thumb_img = img
+                        
+                        thumb_img.convert('RGB').save(thumb_path, 'JPEG', quality=65, optimize=True)
+                        logger.info(f"Compressed and saved new thumbnail photo: {thumb_filename}")
+                    except Exception as thumb_err:
+                        logger.error(f"Thumbnail generation failed: {thumb_err}")
             except Exception as e:
                 logger.error(f"Image compression failed: {e}. Falling back to copying raw file.")
                 shutil.copy2(src_path, dest_path)

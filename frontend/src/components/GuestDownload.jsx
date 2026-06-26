@@ -5,9 +5,11 @@ function GuestDownload({ photoId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [imageSrc, setImageSrc] = useState('');
+  const [downloading, setDownloading] = useState(false);
   
   const BACKEND_URL = (import.meta.env.VITE_API_URL || window.location.origin).replace(/\/$/, '');
-  const imageUrl = `${BACKEND_URL}/api/photos/${photoId}/image`;
+  const thumbnailUrl = `${BACKEND_URL}/api/photos/${photoId}/thumbnail`;
+  const highResUrl = `${BACKEND_URL}/api/photos/${photoId}/image`;
 
   useEffect(() => {
     let active = true;
@@ -16,8 +18,8 @@ function GuestDownload({ photoId }) {
     setLoading(true);
     setError(null);
 
-    // Fetch the photo as a blob with the bypass header
-    fetch(imageUrl, {
+    // Fetch the thumbnail photo as a blob with the bypass header
+    fetch(thumbnailUrl, {
       headers: {
         'ngrok-skip-browser-warning': 'true'
       }
@@ -51,13 +53,33 @@ function GuestDownload({ photoId }) {
   }, [photoId]);
 
   const handleDownload = () => {
-    if (!imageSrc) return;
-    const link = document.createElement('a');
-    link.href = imageSrc;
-    link.download = `Vixora_${photoId}.jpg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    setDownloading(true);
+    fetch(highResUrl, {
+      headers: {
+        'ngrok-skip-browser-warning': 'true'
+      }
+    })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("Failed to download high-resolution image.");
+        }
+        return res.blob();
+      })
+      .then((blob) => {
+        const localUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = localUrl;
+        link.download = `Vixora_${photoId}.jpg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(localUrl);
+        setDownloading(false);
+      })
+      .catch((err) => {
+        alert(err.message);
+        setDownloading(false);
+      });
   };
 
   return (
@@ -92,9 +114,18 @@ function GuestDownload({ photoId }) {
               <img src={imageSrc} alt="Captured Moment" className="guest-img" />
             </div>
 
-            <button className="btn btn-primary" onClick={handleDownload} style={{ width: '100%' }}>
-              <Download size={18} />
-              Download Photo
+            <button className="btn btn-primary" onClick={handleDownload} disabled={downloading} style={{ width: '100%' }}>
+              {downloading ? (
+                <>
+                  <Loader2 className="spinner" size={18} />
+                  Downloading...
+                </>
+              ) : (
+                <>
+                  <Download size={18} />
+                  Download Photo
+                </>
+              )}
             </button>
             
             <p style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '15px' }}>

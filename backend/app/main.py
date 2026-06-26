@@ -411,6 +411,27 @@ def get_photo_image(photo_id: str, db: Session = Depends(get_db)):
         
     return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.original_name or photo.filename)
 
+@app.get("/api/photos/{photo_id}/thumbnail")
+def get_photo_thumbnail(photo_id: str, db: Session = Depends(get_db)):
+    """Serves the compressed thumbnail image file, falling back to the high-res image if missing."""
+    photo = db.query(Photo).filter(Photo.id == photo_id).first()
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+        
+    filename_path = Path(photo.filename)
+    thumb_filename = f"{filename_path.stem}_thumb.jpg"
+    thumb_path = settings.PHOTOS_DIR / thumb_filename
+    
+    if thumb_path.exists():
+        return FileResponse(str(thumb_path), media_type="image/jpeg", filename=thumb_filename)
+        
+    # Fallback to high-resolution photo file
+    file_path = settings.PHOTOS_DIR / photo.filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Physical photo file missing from disk")
+        
+    return FileResponse(str(file_path), media_type="image/jpeg", filename=photo.original_name or photo.filename)
+
 @app.get("/api/photos/{photo_id}/qrcode")
 def get_photo_qrcode(photo_id: str, request: Request, public_url: Optional[str] = None, db: Session = Depends(get_db)):
     """Generates the QR code pointing to the download URL dynamically in-memory."""

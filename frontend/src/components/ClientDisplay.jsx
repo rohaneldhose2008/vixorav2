@@ -127,7 +127,7 @@ function ClientDisplay() {
                 
                 {/* Captured Photo */}
                 <div className="display-img-wrapper">
-                  <img src={`${BACKEND_URL}/api/photos/${photo.id}/image`} alt="Captured moment" />
+                  <img src={`${BACKEND_URL}/api/photos/${photo.id}/thumbnail`} alt="Captured moment" />
                 </div>
                 
                 {/* QR Code and Instructions underneath */}
