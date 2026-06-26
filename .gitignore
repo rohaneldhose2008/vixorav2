@@ -8,6 +8,7 @@ backend/watch_folder/*.jpeg
 backend/watch_folder/*.png
 backend/photos/
 backend/.env
+*.log
 
 # Frontend
 frontend/node_modules/

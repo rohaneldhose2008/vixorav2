@@ -146,7 +146,29 @@ async def detect_ngrok_tunnel_task():
                             return
             except Exception:
                 pass
-    logger.warning("Ngrok auto-detection timed out. Using default config URL.")
+    logger.warning("Ngrok auto-detection timed out.")
+
+async def detect_cloudflare_tunnel_task():
+    """Background task to read cloudflared.log and parse the dynamic trycloudflare.com URL."""
+    import re
+    logger.info("Starting background Cloudflare URL auto-detection...")
+    log_path = Path(settings.BASE_DIR) / "cloudflared.log"
+    alternative_log_path = Path(settings.BASE_DIR).parent / "cloudflared.log"
+    
+    for _ in range(30): # Poll for up to 90 seconds (30 attempts * 3 seconds)
+        await asyncio.sleep(3.0)
+        for path in (log_path, alternative_log_path):
+            if path.exists():
+                try:
+                    content = path.read_text(encoding="utf-8", errors="ignore")
+                    match = re.search(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com", content)
+                    if match:
+                        settings.PUBLIC_URL = match.group(0).rstrip('/')
+                        logger.info(f"Cloudflare auto-detected and registered: {settings.PUBLIC_URL}")
+                        return
+                except Exception as e:
+                    logger.warning(f"Error reading Cloudflare log file {path}: {e}")
+    logger.warning("Cloudflare auto-detection timed out.")
 
 # Server Startup
 @app.on_event("startup")
@@ -171,6 +193,8 @@ async def startup_event():
     
     # Launch Ngrok auto-detection background task
     asyncio.create_task(detect_ngrok_tunnel_task())
+    # Launch Cloudflare auto-detection background task
+    asyncio.create_task(detect_cloudflare_tunnel_task())
 
 def start_capture_services():
     """Starts either the folder watcher or HDMI camera depending on the active setting."""
