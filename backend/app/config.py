@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR}/vixora2.db")
     
     # Security
-    ADMIN_PASSCODE: str = os.getenv("ADMIN_PASSCODE", "1234")
+    ADMIN_PASSCODE: str = os.getenv("ADMIN_PASSCODE", "9037352739")
     
     # Camera Index for HDMI Capture mode
     CAMERA_INDEX: int = int(os.getenv("CAMERA_INDEX", "0"))

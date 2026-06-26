@@ -6,6 +6,8 @@ backend/vixora2.db
 backend/watch_folder/*.jpg
 backend/watch_folder/*.jpeg
 backend/watch_folder/*.png
+backend/photos/
+backend/.env
 
 # Frontend
 frontend/node_modules/

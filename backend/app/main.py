@@ -238,8 +238,6 @@ def update_admin_settings(payload: SettingsUpdate, authenticated: bool = Depends
         settings.WATCH_DIR.mkdir(parents=True, exist_ok=True)
     if payload.public_url is not None:
         settings.PUBLIC_URL = payload.public_url.rstrip('/')
-    if payload.passcode is not None:
-        settings.ADMIN_PASSCODE = payload.passcode
 
     logger.info("Settings updated. Restarting capture services...")
     start_capture_services()
@@ -456,7 +454,7 @@ async def websocket_display_endpoint(websocket: WebSocket):
     try:
         active_event = db.query(Event).filter(Event.is_active == True).order_by(Event.id.desc()).first()
         if active_event:
-            latest_photos = db.query(Photo).filter(Photo.event_id == active_event.id).order_by(Photo.created_at.desc()).limit(20).all()
+            latest_photos = db.query(Photo).filter(Photo.event_id == active_event.id).order_by(Photo.created_at.desc()).limit(100).all()
             photos_data = []
             for photo in latest_photos:
                 dl_url, qr_url = get_photo_urls(photo.id, str(websocket.base_url))

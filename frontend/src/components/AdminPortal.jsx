@@ -556,16 +556,6 @@ function Dashboard({
                 </p>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Change Admin Passcode</label>
-                <input 
-                  type="password" 
-                  className="form-input"
-                  placeholder="Enter new passcode to change"
-                  value={editSettings.passcode || ''}
-                  onChange={(e) => setEditSettings({ ...editSettings, passcode: e.target.value })}
-                />
-              </div>
 
               <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
                 Apply & Save Settings
