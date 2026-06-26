@@ -126,8 +126,31 @@ class FolderWatcher:
             dest_filename = f"{clean_stem}_{photo_uuid[:8]}{src_path.suffix}"
             dest_path = settings.PHOTOS_DIR / dest_filename
             
-            # 4. Copy file to local photos folder
-            shutil.copy2(src_path, dest_path)
+            # 4. Copy and compress file to local photos folder
+            try:
+                from PIL import ImageOps
+                with Image.open(src_path) as img:
+                    # Auto-rotate based on EXIF orientation data
+                    img = ImageOps.exif_transpose(img)
+                    
+                    # Optional: Resize high-resolution DSLR photos to a max of 2400px to save network bandwidth
+                    max_size = 2400
+                    width, height = img.size
+                    if width > max_size or height > max_size:
+                        if width > height:
+                            new_width = max_size
+                            new_height = int(height * (max_size / width))
+                        else:
+                            new_height = max_size
+                            new_width = int(width * (max_size / height))
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # Save as JPEG with quality=85 (highly optimized)
+                    img.convert('RGB').save(dest_path, 'JPEG', quality=85, optimize=True)
+                logger.info(f"Compressed and saved new photo: {dest_filename}")
+            except Exception as e:
+                logger.error(f"Image compression failed: {e}. Falling back to copying raw file.")
+                shutil.copy2(src_path, dest_path)
             
             # 5. Insert into Database
             new_photo = Photo(
