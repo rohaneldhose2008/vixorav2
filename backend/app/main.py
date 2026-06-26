@@ -311,8 +311,15 @@ def get_event_photos(request: Request, db: Session = Depends(get_db), authentica
     
     response = []
     base_request_url = str(request.base_url)
+    db_changed = False
     
     for photo in photos:
+        file_path = settings.PHOTOS_DIR / photo.filename
+        if not file_path.exists():
+            db.delete(photo)
+            db_changed = True
+            continue
+            
         dl_url, qr_url = get_photo_urls(photo.id, base_request_url)
         response.append({
             "id": photo.id,
@@ -323,6 +330,10 @@ def get_event_photos(request: Request, db: Session = Depends(get_db), authentica
             "download_url": dl_url,
             "qrcode_url": qr_url
         })
+        
+    if db_changed:
+        db.commit()
+        
     return response
 
 @app.post("/api/admin/wipe")
@@ -501,7 +512,14 @@ async def websocket_display_endpoint(websocket: WebSocket):
         if active_event:
             latest_photos = db.query(Photo).filter(Photo.event_id == active_event.id).order_by(Photo.created_at.desc()).limit(100).all()
             photos_data = []
+            db_changed = False
             for photo in latest_photos:
+                file_path = settings.PHOTOS_DIR / photo.filename
+                if not file_path.exists():
+                    db.delete(photo)
+                    db_changed = True
+                    continue
+                    
                 dl_url, qr_url = get_photo_urls(photo.id, str(websocket.base_url))
                 photos_data.append({
                     "id": photo.id,
@@ -512,6 +530,9 @@ async def websocket_display_endpoint(websocket: WebSocket):
                     "download_url": dl_url,
                     "qrcode_url": qr_url
                 })
+            
+            if db_changed:
+                db.commit()
             
             await websocket.send_json({
                 "event": "init",

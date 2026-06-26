@@ -154,6 +154,10 @@ function Dashboard({
       
       // Stats
       const statsRes = await fetch(`${BACKEND_URL}/api/admin/stats`, { headers });
+      if (statsRes.status === 401) {
+        handleLogout();
+        return;
+      }
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         setStats(statsData);
